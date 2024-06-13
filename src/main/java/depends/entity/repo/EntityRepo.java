@@ -24,15 +24,24 @@ SOFTWARE.
 
 package depends.entity.repo;
 
+import com.github.javaparser.ast.body.MethodDeclaration;
 import depends.entity.Entity;
 import depends.entity.FileEntity;
 import depends.entity.GenericName;
 
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.List;
 
 public interface EntityRepo extends IdGenerator {
 	public static final String GLOBAL_SCOPE_NAME = "::GLOBAL::";
+
+	void addImplementEntities(Entity entity);
+
+	List<Entity> getImplementEntities(String qualifiedName);
+
+	void addMethodDeclaration(Entity entity);
+	MethodDeclaration getMethodDeclaration(String pathName);
 
 	Entity getEntity(String entityName);
 

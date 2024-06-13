@@ -24,20 +24,21 @@ SOFTWARE.
 
 package depends;
 
-import depends.addons.DV8MappingFileBuilder;
+import com.github.javaparser.ast.body.MethodDeclaration;
+import depends.entity.Entity;
+import depends.entity.FileEntity;
+import depends.entity.FunctionEntity;
+import depends.entity.TypeEntity;
 import depends.entity.repo.EntityRepo;
 import depends.extractor.AbstractLangProcessor;
 import depends.extractor.LangProcessorRegistration;
-import depends.extractor.UnsolvedBindings;
-import depends.format.DependencyDumper;
-import depends.format.detail.UnsolvedSymbolDumper;
 import depends.generator.DependencyGenerator;
 import depends.generator.FileDependencyGenerator;
 import depends.generator.FunctionDependencyGenerator;
 import depends.generator.StructureDependencyGenerator;
-import depends.matrix.core.DependencyMatrix;
 import depends.relations.BindingResolver;
 import depends.relations.IBindingResolver;
+import depends.relations.Relation;
 import depends.relations.RelationCounter;
 import edu.emory.mathcs.backport.java.util.Arrays;
 import multilang.depends.util.file.FileUtil;
@@ -50,10 +51,14 @@ import org.codehaus.plexus.util.StringUtils;
 import picocli.CommandLine;
 import picocli.CommandLine.PicocliException;
 
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * The entry pooint of depends
@@ -62,6 +67,12 @@ public class Main {
 
 	public static void main(String[] args) {
 		try {
+			args = new String[]{
+					"java",
+					"/Users/esvc/biyao/code/express.biyao.com/express-dubbo-soa",
+					"express",
+					"-d=./output",
+					"-f=json"};
 			LangRegister langRegister = new LangRegister();
 			langRegister.register();
 			DependsCommand appArgs = CommandLine.populateCommand(new DependsCommand(), args);
@@ -95,7 +106,7 @@ public class Main {
 	}
 
 	@SuppressWarnings("unchecked")
-	private static void executeCommand(DependsCommand args) throws ParameterException {
+	private static void executeCommand(DependsCommand args) throws ParameterException, IOException {
 		String lang = args.getLang();
 		String inputDir = args.getSrc();
 		String[] includeDir = args.getIncludes();
@@ -124,31 +135,166 @@ public class Main {
 		new RelationCounter(entityRepo,langProcessor, bindingResolver).computeRelations();
 		System.out.println("Dependency done....");
 
-		//step2: generate dependencies matrix
-		List<DependencyGenerator> dependencyGenerators = getDependencyGenerators(args, inputDir);
-		for (DependencyGenerator dependencyGenerator:dependencyGenerators) {
-			DependencyMatrix matrix = dependencyGenerator.identifyDependencies(entityRepo, args.getTypeFilter());
-			DependencyDumper output = new DependencyDumper(matrix);
-			output.outputResult(outputName+"-"+dependencyGenerator.getType(), outputDir, outputFormat);
+		Map<String, List<Entity>> groupedEntities = new HashMap<>();
+		Iterator<Entity> it = entityRepo.entityIterator();
+		while (it.hasNext()) {
+			Entity entity = it.next();
+			String key = entity.getClass().getSimpleName();
+			groupedEntities.computeIfAbsent(key, k -> new ArrayList<>()).add(entity);
 		}
 
-		if (args.isOutputExternalDependencies()) {
-			Set<UnsolvedBindings> unsolved = langProcessor.getExternalDependencies();
-	    	UnsolvedSymbolDumper unsolvedSymbolDumper = new UnsolvedSymbolDumper(unsolved,args.getOutputName(),args.getOutputDir(),
-	    			new LeadingNameStripper(args.isStripLeadingPath(),inputDir,args.getStrippedPaths()));
-	    	unsolvedSymbolDumper.output();
-		}
+		processEntity(groupedEntities, entityRepo, outputDir);
+
 		long endTime = System.currentTimeMillis();
 		TemporaryFile.getInstance().delete();
 		CacheManager.create().shutdown();
 		System.out.println("Consumed time: " + (float) ((endTime - startTime) / 1000.00) + " s,  or "
 				+ (float) ((endTime - startTime) / 60000.00) + " min.");
-		if ( args.isDv8map()) {
-			DV8MappingFileBuilder dv8MapfileBuilder = new DV8MappingFileBuilder(langProcessor.supportedRelations());
-			dv8MapfileBuilder.create(outputDir+ File.separator+"depends-dv8map.mapping");
+	}
+
+	private static void processEntity(Map<String, List<Entity>> groupedEntities, EntityRepo entityRepo, String outputDir) throws IOException {
+		List<FileEntity> fileEntity = groupedEntities.get("FileEntity").stream()
+				.map(FileEntity.class::cast)
+				.collect(Collectors.toList());
+		for (FileEntity entity : fileEntity) {
+			Collection<Entity> children = entity.getChildren();
+			if (children != null && !children.isEmpty()) {
+				for (Entity child : children) {
+					if (child instanceof TypeEntity) {
+						for (Entity funcChild : child.getChildren()) {
+							if (funcChild instanceof FunctionEntity) {
+
+								Set<Integer> ids = new HashSet<>();
+								ids.add(funcChild.getId());
+								FunctionEntity functionEntity = (FunctionEntity) funcChild;
+								String funcName = functionEntity.getRawName().getName();//getExpressInfoByExpressCode
+								String params = functionEntity.getParameters().stream()
+										.map(varEntity -> varEntity.getRawName().getName())
+										.collect(Collectors.joining(","));
+								String pathName = child.getRawName().getName()+","
+										+funcName + "," + params;//ExpressInnerServiceImpl,getExpressInfoByExpressCode,expressCode,expressId
+								String logFileName = outputDir + "/" + child.getRawName().getName() +"-"+funcName + ".log";
+								try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName))) {
+									writer.write("class name1:"+child.getRawName().getName()+ "\n");
+									MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
+									if( null!=methodDeclaration){
+										if (methodDeclaration.getComment().isPresent()) {
+											writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
+										}
+										writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "")+ "\n");
+										writer.write("\n");
+									}
+									processRelations(funcChild, entityRepo, writer, ids);
+								}
+//								return;
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
+	/**
+	 * 处理依赖方法
+	 */
+	private static void processRelations(Entity entity, EntityRepo entityRepo, BufferedWriter writer, Set<Integer> ids) throws IOException {
+		ArrayList<Relation> relations = entity.getRelations();
+		if (relations != null && !relations.isEmpty()) {
+			for (Relation relation : relations) {
+				if(relation.getEntity().getId().equals(entity.getId())){
+					continue;
+				}
+				//Call为方法调用
+				if ("Call".equals(relation.getType()) && !ids.contains(relation.getEntity().getId())) {
+					printCodeBody(relation.getEntity(), entityRepo, writer, ids);
+					processRelations(relation.getEntity(), entityRepo, writer, ids);
+				}
+			}
+		}
+	}
+
+	private static void printCodeBody(Entity entity, EntityRepo entityRepo, BufferedWriter writer, Set<Integer> ids) throws IOException {
+		if (ids.contains(entity.getId())) {
+			return;
+		}
+		//对象依赖，将对象代码完整引入，如new ByException、new RegisterSFRouteHandler
+		if (entity instanceof TypeEntity) {
+			Entity parent = entity.getParent();
+			if (parent instanceof FileEntity) {
+//				String content = new String(Files.readAllBytes(Paths.get(parent.getQualifiedName())), StandardCharsets.UTF_8);
+//				writer.write("class name2:"+entity.getParent().getRawName().getName()+ "\n");
+//				writer.write(cleanText(content)+ "\n");
+				ids.add(entity.getId());
+				((TypeEntity) entity).getFunctions().forEach(funcEntity -> {
+					try {
+						ids.add(funcEntity.getId());
+						processRelations(funcEntity, entityRepo, writer, ids);
+					} catch (IOException e) {
+						throw new RuntimeException(e);
+					}
+				});
+			}
+		}else if (entity instanceof FunctionEntity) {
+			FunctionEntity funcEntity = (FunctionEntity) entity;
+			String funcName = funcEntity.getRawName().getName();//getExpressInfoByExpressCode
+			String params = funcEntity.getParameters().stream()
+					.map(varEntity -> varEntity.getRawName().getName())
+					.collect(Collectors.joining(","));// expressCode,expressId
+
+			// 根据方法FunctionEntity 找到所属类TypeEntity，获取类名称
+			//处理interface调用
+			List<Entity> implementEntities = entityRepo.getImplementEntities(entity.getParent().getQualifiedName());
+			// 多个实现类
+			if (null!= implementEntities && !implementEntities.isEmpty()) {
+				ids.add(entity.getId());
+				for (Entity implementEntity : implementEntities) {
+					String pathName = implementEntity.getRawName().getName()+","
+							+ funcName + "," + params;
+					//取实现类代码
+					MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
+					if( null!=methodDeclaration){
+						writer.write("class name3:"+implementEntity.getRawName().getName()+ "\n");
+						if (methodDeclaration.getComment().isPresent()) {
+							writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
+						}
+						writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "")+ "\n");
+					}
+					//取实现类方法
+					List<Entity> funcImplementCall = entityRepo.getImplementEntities(pathName);
+					if ( null != funcImplementCall) {
+						for (Entity call : funcImplementCall) {
+							ids.add(call.getId());
+							processRelations(call, entityRepo, writer, ids);
+						}
+					}
+
+				}
+			}else {
+				//非interface，直接读取方法体
+				String pathName = entity.getParent().getRawName().getName() + "," + funcName + "," + params;
+				ids.add(entity.getId());
+				//取实现类代码
+				MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
+				if(methodDeclaration != null){
+					writer.write("class name4:"+entity.getParent().getRawName().getName()+ "\n");
+					if (methodDeclaration.getComment().isPresent()) {
+						writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
+					}
+					writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "")+ "\n");
+				}
+			}
+		}
+	}
+
+	private static String cleanText(String text) {
+		if (text == null) {
+			return "";
+		}
+//		text = text.replace("\n", " ").replace("\r", " ");
+//		return text.replaceAll("\\s+", " ");
+		return text;
+	}
 	private static String[] appendAllFoldersToIncludePath(String inputDir, String[] includeDir) {
 		FolderCollector includePathCollector = new FolderCollector();
 		List<String> additionalIncludePaths = includePathCollector.getFolders(inputDir);

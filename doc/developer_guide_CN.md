@@ -122,7 +122,7 @@ double这类类型。而前缀匹配则包括java.lang.\*， \_\_前缀等。
 
 Entity和Relation是两个核心概念，其定义如下：
 
-、![](./img_devguide/image4.png){width="5.767361111111111in"
+![](./img_devguide/image4.png){width="5.767361111111111in"
 height="2.9611111111111112in"}
 
 虽然Entity的方法很多，但是其数据结构并不复杂。主要的属性包括:id,

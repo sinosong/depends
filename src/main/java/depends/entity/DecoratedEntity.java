@@ -31,7 +31,7 @@ import java.util.Collection;
 import java.util.List;
 
 public abstract class DecoratedEntity extends Entity{
-	private Collection<GenericName> annotations;
+	public Collection<GenericName> annotations;
 	private Collection<Entity> resolvedAnnotations;
 	private Collection<Entity> resolvedTypeParameters;
 	public DecoratedEntity() {

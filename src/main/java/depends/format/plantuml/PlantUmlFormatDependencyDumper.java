@@ -61,7 +61,7 @@ public class PlantUmlFormatDependencyDumper extends AbstractFormatDependencyDump
 		}		
 	}
 
-	private String getRelationSymbol(String type) {
+	private String getRelationSymbol(String type) {//todo 优化plantuml语法
 		if (type.equals(DependencyType.IMPLEMENT)) {
 			return "..|>";
 		}else if (type.equals(DependencyType.INHERIT)) {

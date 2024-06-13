@@ -31,6 +31,7 @@ import depends.extractor.AbstractLangProcessor;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 public class RelationCounter {
@@ -215,6 +216,9 @@ public class RelationCounter {
 		for (TypeEntity interfaceType:type.getImplementedTypes()) {
 			type.addRelation(buildRelation(type,DependencyType.IMPLEMENT,interfaceType));
 		}
+		if(type.getImplementedTypes() != null && !type.getImplementedTypes().isEmpty()){
+			repo.addImplementEntities(type);
+		}
 	}
 
 	private void computeFunctionRelations(FunctionEntity func) {
@@ -237,6 +241,14 @@ public class RelationCounter {
 				func.addRelation(buildRelation(func,DependencyType.IMPLEMENT,funcImpl.getImplemented()));
 			}
 		}
+		// 对实现的方法
+		if (func.annotations != null) {
+			for (GenericName annotation:func.annotations) {
+				if (Objects.equals(annotation.getName(), "Override")) {
+					repo.addImplementEntities(func);
+				}
+			}
+		}
 	}
 
 	private void computeImports(FileEntity file) {
@@ -251,6 +263,7 @@ public class RelationCounter {
 				file.addRelation(buildRelation(file,DependencyType.IMPORT,imported));
 			}
 		}
+		repo.addMethodDeclaration(file);
 	}
 
 }

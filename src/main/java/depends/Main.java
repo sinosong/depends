@@ -54,9 +54,6 @@ import picocli.CommandLine.PicocliException;
 import java.io.BufferedWriter;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -175,18 +172,16 @@ public class Main {
 										+funcName + "," + params;//ExpressInnerServiceImpl,getExpressInfoByExpressCode,expressCode,expressId
 								String logFileName = outputDir + "/" + child.getRawName().getName() +"-"+funcName + ".log";
 								try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName))) {
-									writer.write("class name1:"+child.getRawName().getName()+ "\n");
 									MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
 									if( null!=methodDeclaration){
+										//没有注释的方法不必处理
 										if (methodDeclaration.getComment().isPresent()) {
 											writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
+											writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "")+ "\n");
+											processRelations(funcChild, entityRepo, writer, ids);
 										}
-										writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "")+ "\n");
-										writer.write("\n");
 									}
-									processRelations(funcChild, entityRepo, writer, ids);
 								}
-//								return;
 							}
 						}
 					}
@@ -222,9 +217,6 @@ public class Main {
 		if (entity instanceof TypeEntity) {
 			Entity parent = entity.getParent();
 			if (parent instanceof FileEntity) {
-//				String content = new String(Files.readAllBytes(Paths.get(parent.getQualifiedName())), StandardCharsets.UTF_8);
-//				writer.write("class name2:"+entity.getParent().getRawName().getName()+ "\n");
-//				writer.write(cleanText(content)+ "\n");
 				ids.add(entity.getId());
 				((TypeEntity) entity).getFunctions().forEach(funcEntity -> {
 					try {
@@ -254,10 +246,10 @@ public class Main {
 					//取实现类代码
 					MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
 					if( null!=methodDeclaration){
-						writer.write("class name3:"+implementEntity.getRawName().getName()+ "\n");
+						/*writer.write("class name3:"+implementEntity.getRawName().getName()+ "\n");
 						if (methodDeclaration.getComment().isPresent()) {
 							writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
-						}
+						}*/
 						writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "")+ "\n");
 					}
 					//取实现类方法
@@ -277,10 +269,10 @@ public class Main {
 				//取实现类代码
 				MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
 				if(methodDeclaration != null){
-					writer.write("class name4:"+entity.getParent().getRawName().getName()+ "\n");
+					/*writer.write("class name4:"+entity.getParent().getRawName().getName()+ "\n");
 					if (methodDeclaration.getComment().isPresent()) {
 						writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
-					}
+					}*/
 					writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "")+ "\n");
 				}
 			}
@@ -291,9 +283,9 @@ public class Main {
 		if (text == null) {
 			return "";
 		}
-//		text = text.replace("\n", " ").replace("\r", " ");
-//		return text.replaceAll("\\s+", " ");
-		return text;
+		text = text.replace("\n", " ").replace("\r", " ");
+		return text.replaceAll("\\s+", " ");
+//		return text;
 	}
 	private static String[] appendAllFoldersToIncludePath(String inputDir, String[] includeDir) {
 		FolderCollector includePathCollector = new FolderCollector();

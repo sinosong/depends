@@ -104,6 +104,10 @@ public class InMemoryEntityRepo extends SimpleIdGenerator implements EntityRepo 
                     // 获取类或者接口声明
                     if (typeDeclaration instanceof ClassOrInterfaceDeclaration){
                         ClassOrInterfaceDeclaration classOrInterfaceDeclaration = (ClassOrInterfaceDeclaration) typeDeclaration;
+                        //不处理接口
+                        if (classOrInterfaceDeclaration.isInterface()) {
+                            continue;
+                        }
                         String classOrInterfaceName = classOrInterfaceDeclaration.getNameAsString();//ExpressServiceImpl
                         for (BodyDeclaration<?> bodyDeclaration : typeDeclaration.getMembers()) {
                             // 获取方法声明

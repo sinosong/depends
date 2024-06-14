@@ -32,22 +32,13 @@ import depends.entity.TypeEntity;
 import depends.entity.repo.EntityRepo;
 import depends.extractor.AbstractLangProcessor;
 import depends.extractor.LangProcessorRegistration;
-import depends.generator.DependencyGenerator;
-import depends.generator.FileDependencyGenerator;
-import depends.generator.FunctionDependencyGenerator;
-import depends.generator.StructureDependencyGenerator;
 import depends.relations.BindingResolver;
 import depends.relations.IBindingResolver;
 import depends.relations.Relation;
 import depends.relations.RelationCounter;
-import edu.emory.mathcs.backport.java.util.Arrays;
 import multilang.depends.util.file.FileUtil;
-import multilang.depends.util.file.FolderCollector;
 import multilang.depends.util.file.TemporaryFile;
-import multilang.depends.util.file.path.*;
-import multilang.depends.util.file.strip.LeadingNameStripper;
 import net.sf.ehcache.CacheManager;
-import org.codehaus.plexus.util.StringUtils;
 import picocli.CommandLine;
 import picocli.CommandLine.PicocliException;
 
@@ -68,58 +59,35 @@ public class Main {
 
     public static void main(String[] args) {
         try {
-            args = new String[]{
-                    "java",
-                    "/Users/esvc/biyao/code/express.biyao.com/express-dubbo-soa",
-                    "express",
-                    "-d=./output",
-                    "-f=json"};
+//            args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com/express-dubbo-soa", "./output"};
             LangRegister langRegister = new LangRegister();
             langRegister.register();
-            DependsCommand appArgs = CommandLine.populateCommand(new DependsCommand(), args);
+            ParseCommand appArgs = CommandLine.populateCommand(new ParseCommand(), args);
             if (appArgs.help) {
-                CommandLine.usage(new DependsCommand(), System.out);
+                CommandLine.usage(new ParseCommand(), System.out);
                 System.exit(0);
             }
-            verifyParameters(appArgs);
             executeCommand(appArgs);
         } catch (Exception e) {
             if (e instanceof PicocliException) {
-                CommandLine.usage(new DependsCommand(), System.out);
+                CommandLine.usage(new ParseCommand(), System.out);
             } else if (e instanceof ParameterException) {
                 System.err.println(e.getMessage());
             } else {
-                System.err.println("Exception encountered. If it is a design error, please report issue to us.");
                 e.printStackTrace();
             }
             System.exit(0);
         }
     }
 
-    private static void verifyParameters(DependsCommand args) throws ParameterException {
-        String[] granularities = args.getGranularity();
-        List<String> validGranularities = Arrays.asList(new String[]{"file", "method", "structure"});
-        for (String g : granularities) {
-            if (!validGranularities.contains(g)) {
-                throw new ParameterException("granularity is invalid:" + g);
-            }
-        }
-    }
-
     @SuppressWarnings("unchecked")
-    private static void executeCommand(DependsCommand args) throws ParameterException, IOException {
+    private static void executeCommand(ParseCommand args) throws ParameterException, IOException {
         String lang = args.getLang();
         String inputDir = args.getSrc();
-        String[] includeDir = args.getIncludes();
-        String outputName = args.getOutputName();
+        String[] includeDir = new String[] {};
         String outputDir = args.getOutputDir();
-        String[] outputFormat = args.getFormat();
-
         inputDir = FileUtil.uniqFilePath(inputDir);
-
-        if (args.isAutoInclude()) {
-            includeDir = appendAllFoldersToIncludePath(inputDir, includeDir);
-        }
+        String keyword = args.getKeyword();
 
         AbstractLangProcessor langProcessor = LangProcessorRegistration.getRegistry().getProcessorOf(lang);
         if (langProcessor == null) {
@@ -127,7 +95,7 @@ public class Main {
             return;
         }
 
-        IBindingResolver bindingResolver = new BindingResolver(langProcessor, args.isOutputExternalDependencies(), args.isDuckTypingDeduce());
+        IBindingResolver bindingResolver = new BindingResolver(langProcessor, false, true);
 
         long startTime = System.currentTimeMillis();
         //step1: build data
@@ -144,7 +112,7 @@ public class Main {
             groupedEntities.computeIfAbsent(key, k -> new ArrayList<>()).add(entity);
         }
 
-        processEntity(groupedEntities, entityRepo, outputDir);
+        processEntity(groupedEntities, entityRepo, outputDir, keyword);
 
         long endTime = System.currentTimeMillis();
         TemporaryFile.getInstance().delete();
@@ -153,21 +121,21 @@ public class Main {
                 + (float) ((endTime - startTime) / 60000.00) + " min.");
     }
 
-    private static void processEntity(Map<String, List<Entity>> groupedEntities, EntityRepo entityRepo, String outputDir) throws IOException {
+    private static void processEntity(Map<String, List<Entity>> groupedEntities, EntityRepo entityRepo, String outputDir, String keyword) throws IOException {
         //以文件为入口
         List<FileEntity> fileEntity = groupedEntities.get("FileEntity").stream()
                 .map(FileEntity.class::cast)
                 .collect(Collectors.toList());
         List<String> filePathList = fileEntity.stream().map(FileEntity::getQualifiedName).collect(Collectors.toList());
         List<String> entryFiles = filePathList.stream()
-                .filter(Main::hasEntryAnnotation)
+                .filter(s -> hasEntryAnnotation(s, keyword))
                 .collect(Collectors.toList());
 
         if (!entryFiles.isEmpty()) {
-            System.out.println("发现标识“dify知识库生成入口”，本次仅处理以下文件:");
+            System.out.println("发现文件解析标识“"+keyword+"”，本次仅处理以下文件:");
             entryFiles.forEach(System.out::println);
         } else {
-            System.out.println("未发现文件入口标识，所有文件全部处理");
+            System.out.println("未发现文件解析标识，所有文件全部处理");
         }
 
         for (FileEntity entity : fileEntity) {
@@ -218,13 +186,16 @@ public class Main {
         }
     }
 
-    private static boolean hasEntryAnnotation(String filePath) {
+    private static boolean hasEntryAnnotation(String filePath, String keyword) {
         try (BufferedReader reader = Files.newBufferedReader(Paths.get(filePath))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (line.contains("/**") || line.contains("*")) { // 开始读取注释
                     while ((line = reader.readLine()) != null && !line.trim().isEmpty()) {
-                        if (line.contains("dify知识库生成入口")) {
+                        if(keyword == null || keyword.isEmpty()){
+                            keyword = "dify知识库生成入口";
+                        }
+                        if (line.contains(keyword)) {
                             return true;
                         }
                     }
@@ -331,57 +302,6 @@ public class Main {
         text = text.replace("\n", " ").replace("\r", " ");
         return text.replaceAll("\\s+", " ");
 //		return text;
-    }
-
-    private static String[] appendAllFoldersToIncludePath(String inputDir, String[] includeDir) {
-        FolderCollector includePathCollector = new FolderCollector();
-        List<String> additionalIncludePaths = includePathCollector.getFolders(inputDir);
-        additionalIncludePaths.addAll(Arrays.asList(includeDir));
-        includeDir = additionalIncludePaths.toArray(new String[]{});
-        return includeDir;
-    }
-
-    private static List<DependencyGenerator> getDependencyGenerators(DependsCommand app, String inputDir) throws ParameterException {
-        FilenameWritter filenameWritter = new EmptyFilenameWritter();
-        if (!StringUtils.isEmpty(app.getNamePathPattern())) {
-            if (app.getNamePathPattern().equals("dot") ||
-                    app.getNamePathPattern().equals(".")) {
-                filenameWritter = new DotPathFilenameWritter();
-            } else if (app.getNamePathPattern().equals("unix") ||
-                    app.getNamePathPattern().equals("/")) {
-                filenameWritter = new UnixPathFilenameWritter();
-            } else if (app.getNamePathPattern().equals("windows") ||
-                    app.getNamePathPattern().equals("\\")) {
-                filenameWritter = new WindowsPathFilenameWritter();
-            } else {
-                throw new ParameterException("Unknown name pattern paremater:" + app.getNamePathPattern());
-            }
-        }
-
-        List<DependencyGenerator> dependencyGenerators = new ArrayList<>();
-        for (int i = 0; i < app.getGranularity().length; i++) {
-            /* by default use file dependency generator */
-            DependencyGenerator dependencyGenerator = null;
-            /* method parameter means use method generator */
-            if (app.getGranularity()[i].equals("method"))
-                dependencyGenerator = new FunctionDependencyGenerator();
-            else if (app.getGranularity()[i].equals("file"))
-                dependencyGenerator = new FileDependencyGenerator();
-            else if (app.getGranularity()[i].equals("structure"))
-                dependencyGenerator = new StructureDependencyGenerator();
-
-            dependencyGenerators.add(dependencyGenerator);
-            if (app.isStripLeadingPath() ||
-                    app.getStrippedPaths().length > 0) {
-                dependencyGenerator.setLeadingStripper(new LeadingNameStripper(app.isStripLeadingPath(), inputDir, app.getStrippedPaths()));
-            }
-            if (app.isDetail()) {
-                dependencyGenerator.setGenerateDetail(true);
-            }
-            dependencyGenerator.setOutputSelfDependencies(app.isOutputSelfDependencies());
-            dependencyGenerator.setFilenameRewritter(filenameWritter);
-        }
-        return dependencyGenerators;
     }
 
 }

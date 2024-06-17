@@ -52,7 +52,7 @@ public class ParseCommand {
 	@Parameters(index = "2",  description = "输出解析文件路径")
 	private String dir;
     @Option(names = {"-k", "--keyword"}, description = "只有注释中包含关键词的文件会被解析")
-	private String keyword;
+	private String keyword = "";
 	@Option(names = {"-h","--help"}, usageHelp = true, description = "显示帮助信息")
 	boolean help;
 

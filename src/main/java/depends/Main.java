@@ -42,14 +42,12 @@ import net.sf.ehcache.CacheManager;
 import picocli.CommandLine;
 import picocli.CommandLine.PicocliException;
 
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.FileWriter;
-import java.io.IOException;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -59,7 +57,7 @@ public class Main {
 
     public static void main(String[] args) {
         try {
-//            args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com/express-dubbo-soa", "./output"};
+              args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com", "./output/express.biyao.com.part"};
             LangRegister langRegister = new LangRegister();
             langRegister.register();
             ParseCommand appArgs = CommandLine.populateCommand(new ParseCommand(), args);
@@ -81,13 +79,18 @@ public class Main {
     }
 
     @SuppressWarnings("unchecked")
-    private static void executeCommand(ParseCommand args) throws ParameterException, IOException {
+    private static void executeCommand(ParseCommand args) throws IOException {
         String lang = args.getLang();
         String inputDir = args.getSrc();
         String[] includeDir = new String[] {};
         String outputDir = args.getOutputDir();
         inputDir = FileUtil.uniqFilePath(inputDir);
         String keyword = args.getKeyword();
+
+        File dir = new File(outputDir);
+        if (!dir.exists() && !dir.mkdirs()){
+            System.err.println("目标目录 " + outputDir + " 创建失败");
+        }
 
         AbstractLangProcessor langProcessor = LangProcessorRegistration.getRegistry().getProcessorOf(lang);
         if (langProcessor == null) {
@@ -117,22 +120,31 @@ public class Main {
         long endTime = System.currentTimeMillis();
         TemporaryFile.getInstance().delete();
         CacheManager.create().shutdown();
+        System.out.println("outputDir: "+outputDir);
         System.out.println("Consumed time: " + (float) ((endTime - startTime) / 1000.00) + " s,  or "
                 + (float) ((endTime - startTime) / 60000.00) + " min.");
     }
 
     private static void processEntity(Map<String, List<Entity>> groupedEntities, EntityRepo entityRepo, String outputDir, String keyword) throws IOException {
         //以文件为入口
-        List<FileEntity> fileEntity = groupedEntities.get("FileEntity").stream()
+        List<Entity> fileEntityList = groupedEntities.get("FileEntity");
+        if(fileEntityList == null || fileEntityList.isEmpty()){
+            throw new RuntimeException("无可解析的文件，请确认项目路径是否准确");
+        }
+        List<FileEntity> fileEntity = fileEntityList.stream()
                 .map(FileEntity.class::cast)
                 .collect(Collectors.toList());
-        List<String> filePathList = fileEntity.stream().map(FileEntity::getQualifiedName).collect(Collectors.toList());
-        List<String> entryFiles = filePathList.stream()
-                .filter(s -> hasEntryAnnotation(s, keyword))
+
+        // 设置默认关键字
+        String searchKeyword = (keyword == null || keyword.isEmpty() || "null".equals(keyword)) ? "dfhksdhjfshksjhdfkasjd" : keyword;
+        // 获取带有注释标识的文件列表
+        List<String> entryFiles = fileEntity.stream()
+                .map(FileEntity::getQualifiedName)
+                .filter(filePath -> hasEntryAnnotation(filePath, searchKeyword))
                 .collect(Collectors.toList());
 
         if (!entryFiles.isEmpty()) {
-            System.out.println("发现文件解析标识“"+keyword+"”，本次仅处理以下文件:");
+            System.out.println("发现文件解析标识“"+searchKeyword+"”，本次仅处理以下文件:");
             entryFiles.forEach(System.out::println);
         } else {
             System.out.println("未发现文件解析标识，所有文件全部处理");
@@ -162,9 +174,21 @@ public class Main {
                                 try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName))) {
                                     MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
                                     if (null != methodDeclaration) {
-                                        //没有注释的方法不必处理
+                                        //写入接口方法签名,source:com.biyao.express.dubbo.client.express.IExpressService.getExpressInfoByExpressCode
+                                        Collection<TypeEntity> implementedTypes = ((TypeEntity) child).getImplementedTypes();
+                                        if (implementedTypes != null && !implementedTypes.isEmpty()) {
+                                            implementedTypes.forEach(typeEntity -> typeEntity.getFunctions().forEach(signNameEntity -> {
+                                                if (methodDeclaration.getName().asString().equals(signNameEntity.getRawName().getName())) {
+                                                    try {
+                                                        writer.write("接口签名：" + signNameEntity.getQualifiedName() + "\n");
+                                                    } catch (IOException e) {
+                                                        throw new RuntimeException(e);
+                                                    }
+                                                }
+                                            }));
+                                        }
                                         if (methodDeclaration.getComment().isPresent()) {
-                                            writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "") + "\n");
+                                            writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
                                         }
                                         writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
                                         processRelations(funcChild, entityRepo, writer, ids);
@@ -172,8 +196,12 @@ public class Main {
                                 }
                                 try {
                                     Path path = Paths.get(logFileName);
-                                    if (Files.size(path) == 0) {
+                                    long fileSizeInBytes = Files.size(path);
+                                    if (fileSizeInBytes == 0) {
                                         Files.delete(path);
+                                    }
+                                    if(fileSizeInBytes > MAX_FILE_SIZE){
+                                        compressContent(path);
                                     }
                                 } catch (IOException e) {
                                     e.printStackTrace();
@@ -192,9 +220,6 @@ public class Main {
             while ((line = reader.readLine()) != null) {
                 if (line.contains("/**") || line.contains("*")) { // 开始读取注释
                     while ((line = reader.readLine()) != null && !line.trim().isEmpty()) {
-                        if(keyword == null || keyword.isEmpty()){
-                            keyword = "dify知识库生成入口";
-                        }
                         if (line.contains(keyword)) {
                             return true;
                         }
@@ -263,10 +288,9 @@ public class Main {
                     //取实现类代码
                     MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
                     if (null != methodDeclaration) {
-						/*writer.write("class name3:"+implementEntity.getRawName().getName()+ "\n");
 						if (methodDeclaration.getComment().isPresent()) {
-							writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
-						}*/
+							writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
+						}
                         writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
                     }
                     //取实现类方法
@@ -285,10 +309,9 @@ public class Main {
                 //取实现类代码
                 MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
                 if (methodDeclaration != null) {
-					/*writer.write("class name4:"+entity.getParent().getRawName().getName()+ "\n");
 					if (methodDeclaration.getComment().isPresent()) {
-						writer.write(cleanText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
-					}*/
+						writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
+					}
                     writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
                 }
             }
@@ -301,7 +324,68 @@ public class Main {
         }
         text = text.replace("\n", " ").replace("\r", " ");
         return text.replaceAll("\\s+", " ");
-//		return text;
+    }
+
+    private static final Pattern AUTHOR_PATTERN = Pattern.compile("@author.*", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DATE_PATTERN = Pattern.compile("@date.*", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MODIFIED_PATTERN = Pattern.compile("@modified.*", Pattern.CASE_INSENSITIVE);
+
+    private static String cleanCommentText(String text) {
+        if (text == null) {
+            return "";
+        }
+        String[] lines = text.split("\n");
+        StringBuilder cleanedText = new StringBuilder();
+        for (String line : lines) {
+            if (!AUTHOR_PATTERN.matcher(line.trim()).matches()
+                    && !DATE_PATTERN.matcher(line.trim()).matches()
+                    && !MODIFIED_PATTERN.matcher(line.trim()).matches()) {
+                cleanedText.append(line).append("\n");
+            }
+        }
+        return cleanedText.toString().replaceAll("\\s+", "").trim();
+    }
+
+    public static int MAX_FILE_SIZE = 122880;//超过120k截断
+    private static final Pattern SET_PATTERN = Pattern.compile("^\\s*public\\s+void\\s+set[A-Z][a-zA-Z0-9]*\\s*\\([^)]*\\)\\s*\\{\\s*this\\.[a-zA-Z0-9]+\\s*=\\s*[a-zA-Z0-9]+\\s*;\\s*\\}\\s*$");
+    private static final Pattern GET_PATTERN = Pattern.compile("^\\s*public\\s+[a-zA-Z0-9<>,\\s]+\\s+get[A-Z][a-zA-Z0-9]*\\s*\\([^)]*\\)\\s*\\{\\s*return\\s+[a-zA-Z0-9]+\\s*;\\s*\\}\\s*$");
+
+    private static void compressContent(Path path) throws IOException {
+        // 1. 读取文件内容
+        String content = new String(Files.readAllBytes(path));
+        // 2. 按行拆分内容，并检查每行，清理 set 和 get 方法
+        StringBuilder filteredBuilder = new StringBuilder();
+        String[] lines = content.split("\n");
+        for (String line : lines) {
+            if (!isSetOrGetMethod(line)) {
+                filteredBuilder.append(line).append("\n");
+            }
+        }
+
+        String filteredContent = filteredBuilder.toString();
+        // 3. 判断是否超过128KB，超过则继续清理空字符，不超过写回新内容
+        if (filteredContent.getBytes().length > MAX_FILE_SIZE) {
+            String cleanedContent = filteredContent;
+//            String cleanedContent = filteredContent.replaceAll("\\s+", "");
+            writeContent(path, cleanedContent);
+        } else {
+            Files.write(path, filteredContent.getBytes());
+        }
+    }
+
+    private static boolean isSetOrGetMethod(String line) {
+        return SET_PATTERN.matcher(line).matches() || GET_PATTERN.matcher(line).matches();
+    }
+
+    private static void writeContent(Path path, String content) throws IOException {
+        if (content.getBytes().length > MAX_FILE_SIZE) {
+            System.err.println("文件大小超过 "+ MAX_FILE_SIZE/1024 +"KB, 截断内容");
+            byte[] truncatedBytes = new byte[MAX_FILE_SIZE];
+            System.arraycopy(content.getBytes(), 0, truncatedBytes, 0, MAX_FILE_SIZE);
+            Files.write(path, truncatedBytes);
+        } else {
+            Files.write(path, content.getBytes());
+        }
     }
 
 }

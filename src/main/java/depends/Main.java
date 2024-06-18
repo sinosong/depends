@@ -39,6 +39,7 @@ import depends.relations.RelationCounter;
 import multilang.depends.util.file.FileUtil;
 import multilang.depends.util.file.TemporaryFile;
 import net.sf.ehcache.CacheManager;
+import org.apache.commons.lang3.tuple.MutablePair;
 import picocli.CommandLine;
 import picocli.CommandLine.PicocliException;
 
@@ -55,9 +56,11 @@ import java.util.stream.Collectors;
  */
 public class Main {
 
+    public static MutablePair<String,String> currentInterface = new MutablePair<>("","");
+
     public static void main(String[] args) {
         try {
-              args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com", "./output/express.biyao.com.part"};
+            args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com", "./output/express.biyao.com.061814"};
             LangRegister langRegister = new LangRegister();
             langRegister.register();
             ParseCommand appArgs = CommandLine.populateCommand(new ParseCommand(), args);
@@ -170,8 +173,8 @@ public class Main {
                                         .collect(Collectors.joining(","));
                                 //ExpressInnerServiceImpl,getExpressInfoByExpressCode,expressCode,expressId
                                 String pathName = child.getRawName().getName() + "," + funcName + "," + params;
-                                String logFileName = outputDir + "/" + child.getRawName().getName() + "-" + funcName + ".log";
-                                try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName))) {
+                                String logFileName = outputDir + "/" + child.getRawName().getName() + "-" + funcName;
+                                try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + ".log"))) {
                                     MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
                                     if (null != methodDeclaration) {
                                         //写入接口方法签名,source:com.biyao.express.dubbo.client.express.IExpressService.getExpressInfoByExpressCode
@@ -181,6 +184,8 @@ public class Main {
                                                 if (methodDeclaration.getName().asString().equals(signNameEntity.getRawName().getName())) {
                                                     try {
                                                         writer.write("接口签名：" + signNameEntity.getQualifiedName() + "\n");
+                                                        currentInterface.setLeft(signNameEntity.getQualifiedName());
+                                                        currentInterface.setRight(methodDeclaration.getComment().isPresent()?methodDeclaration.getComment().orElse(null)+"":"");
                                                     } catch (IOException e) {
                                                         throw new RuntimeException(e);
                                                     }
@@ -191,21 +196,10 @@ public class Main {
                                             writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
                                         }
                                         writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
-                                        processRelations(funcChild, entityRepo, writer, ids);
+                                        processRelations(funcChild, entityRepo, logFileName, ids);
                                     }
                                 }
-                                try {
-                                    Path path = Paths.get(logFileName);
-                                    long fileSizeInBytes = Files.size(path);
-                                    if (fileSizeInBytes == 0) {
-                                        Files.delete(path);
-                                    }
-                                    if(fileSizeInBytes > MAX_FILE_SIZE){
-                                        compressContent(path);
-                                    }
-                                } catch (IOException e) {
-                                    e.printStackTrace();
-                                }
+                                deleteEmptyFiles(outputDir);
                             }
                         }
                     }
@@ -232,10 +226,37 @@ public class Main {
         return false;
     }
 
+    public static void deleteEmptyFiles(String directoryPath) {
+        Path inputDirectory = Paths.get(directoryPath);
+
+        try {
+            // 使用Files.walk()获取目录下所有文件的流
+            Files.walk(inputDirectory)
+                    .filter(path -> !Files.isDirectory(path)) // 筛选出文件，排除目录
+                    .forEach(path -> {
+                        try {
+                            // 检查文件大小
+                            long fileSizeInBytes = Files.size(path);
+                            if (fileSizeInBytes == 0) {
+                                // 删除空文件
+                                Files.delete(path);
+                                System.out.println("Deleted empty file: " + path);
+                            }
+                        } catch (IOException e) {
+                            System.err.println("Error while deleting file: " + path);
+                            e.printStackTrace();
+                        }
+                    });
+        } catch (IOException e) {
+            System.err.println("Error while walking the directory: " + inputDirectory);
+            e.printStackTrace();
+        }
+    }
+
     /**
      * 处理依赖方法
      */
-    private static void processRelations(Entity entity, EntityRepo entityRepo, BufferedWriter writer, Set<Integer> ids) throws IOException {
+    private static void processRelations(Entity entity, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
         ArrayList<Relation> relations = entity.getRelations();
         if (relations != null && !relations.isEmpty()) {
             for (Relation relation : relations) {
@@ -244,17 +265,22 @@ public class Main {
                 }
                 //Call为方法调用
                 if ("Call".equals(relation.getType()) && !ids.contains(relation.getEntity().getId())) {
-                    printCodeBody(relation.getEntity(), entityRepo, writer, ids);
-                    processRelations(relation.getEntity(), entityRepo, writer, ids);
+                    //将方法单独拆分到新的文件
+                    if (logFileName.endsWith(".log")) {
+                        logFileName = logFileName.substring(0, logFileName.lastIndexOf("."));
+                    }
+                    String fileName = logFileName + "-" + relation.getEntity().getRawName().getName();
+                    printCodeBody(relation.getEntity(), entityRepo, fileName, ids);
+                    processRelations(relation.getEntity(), entityRepo, fileName, ids);
                 }
             }
         }
     }
 
-    private static void printCodeBody(Entity entity, EntityRepo entityRepo, BufferedWriter writer, Set<Integer> ids) throws IOException {
-        if (ids.contains(entity.getId())) {
-            return;
-        }
+    private static void printCodeBody(Entity entity, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
+//        if (ids.contains(entity.getId())) {
+//            return;
+//        }
         //对象依赖，将对象代码完整引入，如new ByException、new RegisterSFRouteHandler
         if (entity instanceof TypeEntity) {
             Entity parent = entity.getParent();
@@ -263,7 +289,7 @@ public class Main {
                 ((TypeEntity) entity).getFunctions().forEach(funcEntity -> {
                     try {
                         ids.add(funcEntity.getId());
-                        processRelations(funcEntity, entityRepo, writer, ids);
+                        processRelations(funcEntity, entityRepo, logFileName, ids);
                     } catch (IOException e) {
                         throw new RuntimeException(e);
                     }
@@ -288,33 +314,46 @@ public class Main {
                     //取实现类代码
                     MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
                     if (null != methodDeclaration) {
-						if (methodDeclaration.getComment().isPresent()) {
-							writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
-						}
-                        writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
+                        try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + "-" + funcName + ".log"))) {
+                            writeReference(writer);
+                            if (methodDeclaration.getComment().isPresent()) {
+                                writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
+                            }
+                            writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
+                        }
                     }
                     //取实现类方法
                     List<Entity> funcImplementCall = entityRepo.getImplementEntities(pathName);
                     if (null != funcImplementCall) {
                         for (Entity call : funcImplementCall) {
                             ids.add(call.getId());
-                            processRelations(call, entityRepo, writer, ids);
+                            processRelations(call, entityRepo, logFileName, ids);
                         }
                     }
                 }
             } else {
-                //非interface，直接读取方法体
-                String pathName = entity.getParent().getRawName().getName() + "," + funcName + "," + params;
-                ids.add(entity.getId());
-                //取实现类代码
-                MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
-                if (methodDeclaration != null) {
-					if (methodDeclaration.getComment().isPresent()) {
-						writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
-					}
-                    writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + "-" + funcName + ".log"))) {
+                    //非interface，直接读取方法体
+                    String pathName = entity.getParent().getRawName().getName() + "," + funcName + "," + params;
+                    ids.add(entity.getId());
+                    //取实现类代码
+                    MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
+                    if (methodDeclaration != null) {
+                        writeReference(writer);
+                        if (methodDeclaration.getComment().isPresent()) {
+                            writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
+                        }
+                        writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
+                    }
                 }
             }
+        }
+    }
+
+    public static void writeReference(BufferedWriter writer) throws IOException {
+        writer.write("该方法被接口[" + currentInterface.getLeft() + "]调用。\n");
+        if (currentInterface.getRight() != null && !currentInterface.getRight().isEmpty()) {
+            writer.write("该接口功能说明如下:[" + currentInterface.getRight() + "]\n");
         }
     }
 
@@ -322,8 +361,12 @@ public class Main {
         if (text == null) {
             return "";
         }
-        text = text.replace("\n", " ").replace("\r", " ");
-        return text.replaceAll("\\s+", " ");
+        return text;
+//        text = text.replace("\n", " ").replace("\r", " ");
+//        return text.replaceAll("\\s+", " ");
+
+//        text = text.replaceAll("(\\r\\n|\\r)", "\n");
+//        return text.replaceAll("[ \\t\\f\\v]+", " ");
     }
 
     private static final Pattern AUTHOR_PATTERN = Pattern.compile("@author.*", Pattern.CASE_INSENSITIVE);

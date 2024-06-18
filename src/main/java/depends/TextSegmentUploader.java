@@ -1,5 +1,6 @@
 package depends;
 
+import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import org.apache.http.client.methods.HttpPost;
@@ -15,6 +16,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
  * @author : hannasong
@@ -30,22 +32,21 @@ public class TextSegmentUploader {
     private static String DOCUMENT_ID = "241e9e5c-615a-4c49-adc5-23e958424a75";
 
     public static void main(String[] args) {
-        String dirPath = "/Users/esvc/biyao/public3rd/depends/output/express.biyao.com.part";
-        callDify(dirPath);
+        callDify("/Users/esvc/biyao/public3rd/depends/output/express.biyao.com.061814");
     }
 
     private static void callDify(String dirPath) {
-        String url = "http://10.6.56.26/datasets/949f896b-f22f-4442-beca-6a096c931de0/documents/a9226bf4-28c3-40a0-94d2-bca2b43bdc55";
-        if(url!=null && !url.isEmpty()){
-            String[] parts = url.split("/");
-            DATASET_ID = parts[4];
-            DOCUMENT_ID = parts[6];
-        }
         File dir = new File(dirPath);
         if (!dir.exists() || !dir.isDirectory()) {
             System.out.println("Invalid directory path: " + dirPath);
             return;
         }
+        JSONObject processRule = new JSONObject();
+        processRule.put("mode", "automatic");
+        String fileName = UUID.randomUUID().toString().replace("-", "");
+//        fileName = "express方法维度且清理换行空格";
+        DOCUMENT_ID = createDocumentByText(DATASET_ID, fileName, "", "high_quality", processRule);
+        System.out.println("请访问：http://10.6.56.26/datasets/"+DATASET_ID+"/documents/"+DOCUMENT_ID);
 
         for (File file : dir.listFiles()) {
             if (file.isFile()) {
@@ -63,6 +64,36 @@ public class TextSegmentUploader {
                 }
             }
         }
+    }
+
+    private static String createDocumentByText(String datasetId, String name, String text, String indexingTechnique, JSONObject processRule) {
+        String url = BASE_URL + "/datasets/" + datasetId + "/document/create_by_text";
+
+        JSONObject payload = new JSONObject();
+        payload.put("name", name);
+        payload.put("text", text);
+        payload.put("indexing_technique", indexingTechnique);
+        payload.put("process_rule", processRule);
+
+        try (CloseableHttpClient httpClient = HttpClients.createDefault()) {
+            HttpPost post = new HttpPost(url);
+            post.setHeader(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY);
+            post.setHeader("Content-Type", "application/json");
+            post.setEntity(new StringEntity(payload.toJSONString(), StandardCharsets.UTF_8));
+
+            try (CloseableHttpResponse response = httpClient.execute(post)) {
+                String responseString = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                System.out.println("Response: " + responseString);
+                if (response.getStatusLine().getStatusCode() == 200) {
+                    JSONObject jsonObject = JSON.parseObject(responseString);
+                    JSONObject document = jsonObject.getJSONObject("document");
+                    return document.getString("id");
+                }
+            }
+        } catch (IOException e) {
+            System.out.println("Error sending request to " + url + ", Error: " + e.getMessage());
+        }
+        throw new RuntimeException("文件创建失败");
     }
 
     private static void addDocumentSegment(String datasetId, String documentId, String content, JSONObject keywords, String answer) {
@@ -93,4 +124,3 @@ public class TextSegmentUploader {
         }
     }
 }
-

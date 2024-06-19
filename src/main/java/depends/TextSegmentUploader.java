@@ -29,10 +29,9 @@ public class TextSegmentUploader {
     private static final String API_KEY = "dataset-o1lNG1VIQrhpHWotn8RA0vTR";
     private static final String BASE_URL = "http://10.6.56.26/v1";
     private static String DATASET_ID = "949f896b-f22f-4442-beca-6a096c931de0";
-    private static String DOCUMENT_ID = "241e9e5c-615a-4c49-adc5-23e958424a75";
 
     public static void main(String[] args) {
-        callDify("/Users/esvc/biyao/public3rd/depends/output/express.biyao.com.061814");
+        callDify("/Users/esvc/temp/dify/express.biyao.com.061816");
     }
 
     private static void callDify(String dirPath) {
@@ -44,9 +43,9 @@ public class TextSegmentUploader {
         JSONObject processRule = new JSONObject();
         processRule.put("mode", "automatic");
         String fileName = UUID.randomUUID().toString().replace("-", "");
-//        fileName = "express方法维度且清理换行空格";
-        DOCUMENT_ID = createDocumentByText(DATASET_ID, fileName, "", "high_quality", processRule);
-        System.out.println("请访问：http://10.6.56.26/datasets/"+DATASET_ID+"/documents/"+DOCUMENT_ID);
+        fileName = "express方法维度不清理格式";
+        String documentId = createDocumentByText(DATASET_ID, fileName, "", "high_quality", processRule);
+        System.out.println("请访问：http://10.6.56.26/datasets/"+DATASET_ID+"/documents/"+ documentId);
 
         for (File file : dir.listFiles()) {
             if (file.isFile()) {
@@ -58,7 +57,7 @@ public class TextSegmentUploader {
                     }
                     String content = contentBuilder.toString();
                     System.out.println(file.getName());
-                    addDocumentSegment(DATASET_ID, DOCUMENT_ID, content, new JSONObject(), "");
+                    addDocumentSegment(DATASET_ID, documentId, content, new JSONObject(), "");
                 } catch (IOException e) {
                     System.out.println("Error processing file: " + file.getName() + ", Error: " + e.getMessage() + ". Skipping to next file.");
                 }

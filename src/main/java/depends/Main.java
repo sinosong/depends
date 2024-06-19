@@ -45,7 +45,6 @@ import picocli.CommandLine.PicocliException;
 
 import java.io.*;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -56,44 +55,43 @@ import java.util.stream.Collectors;
  */
 public class Main {
 
-    public static MutablePair<String,String> currentInterface = new MutablePair<>("","");
+    public static MutablePair<String, String> currentInterface = new MutablePair<>("", "");
 
     public static void main(String[] args) {
         try {
-            args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com", "./output/express.biyao.com.061814"};
-            LangRegister langRegister = new LangRegister();
-            langRegister.register();
+            args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com", "./output/express.biyao.com.061901"};
+            new LangRegister().register();
             ParseCommand appArgs = CommandLine.populateCommand(new ParseCommand(), args);
+
             if (appArgs.help) {
                 CommandLine.usage(new ParseCommand(), System.out);
                 System.exit(0);
             }
+
             executeCommand(appArgs);
         } catch (Exception e) {
-            if (e instanceof PicocliException) {
-                CommandLine.usage(new ParseCommand(), System.out);
-            } else if (e instanceof ParameterException) {
-                System.err.println(e.getMessage());
-            } else {
-                e.printStackTrace();
-            }
-            System.exit(0);
+            handleException(e);
         }
     }
 
-    @SuppressWarnings("unchecked")
+    private static void handleException(Exception e) {
+        if (e instanceof PicocliException) {
+            CommandLine.usage(new ParseCommand(), System.out);
+        } else if (e instanceof ParameterException) {
+            System.err.println(e.getMessage());
+        } else {
+            e.printStackTrace();
+        }
+        System.exit(0);
+    }
+
     private static void executeCommand(ParseCommand args) throws IOException {
         String lang = args.getLang();
-        String inputDir = args.getSrc();
-        String[] includeDir = new String[] {};
+        String inputDir = FileUtil.uniqFilePath(args.getSrc());
         String outputDir = args.getOutputDir();
-        inputDir = FileUtil.uniqFilePath(inputDir);
         String keyword = args.getKeyword();
 
-        File dir = new File(outputDir);
-        if (!dir.exists() && !dir.mkdirs()){
-            System.err.println("目标目录 " + outputDir + " 创建失败");
-        }
+        createOutputDirectory(outputDir);
 
         AbstractLangProcessor langProcessor = LangProcessorRegistration.getRegistry().getProcessorOf(lang);
         if (langProcessor == null) {
@@ -102,106 +100,115 @@ public class Main {
         }
 
         IBindingResolver bindingResolver = new BindingResolver(langProcessor, false, true);
-
         long startTime = System.currentTimeMillis();
-        //step1: build data
-        EntityRepo entityRepo = langProcessor.buildDependencies(inputDir, includeDir, bindingResolver);
 
+        EntityRepo entityRepo = langProcessor.buildDependencies(inputDir, new String[]{}, bindingResolver);
         new RelationCounter(entityRepo, langProcessor, bindingResolver).computeRelations();
         System.out.println("Dependency done....");
 
-        Map<String, List<Entity>> groupedEntities = new HashMap<>();
-        Iterator<Entity> it = entityRepo.entityIterator();
-        while (it.hasNext()) {
-            Entity entity = it.next();
-            String key = entity.getClass().getSimpleName();
-            groupedEntities.computeIfAbsent(key, k -> new ArrayList<>()).add(entity);
-        }
-
+        Map<String, List<Entity>> groupedEntities = groupEntitiesByType(entityRepo);
         processEntity(groupedEntities, entityRepo, outputDir, keyword);
 
         long endTime = System.currentTimeMillis();
         TemporaryFile.getInstance().delete();
         CacheManager.create().shutdown();
-        System.out.println("outputDir: "+outputDir);
+        System.out.println("outputDir: " + outputDir);
         System.out.println("Consumed time: " + (float) ((endTime - startTime) / 1000.00) + " s,  or "
                 + (float) ((endTime - startTime) / 60000.00) + " min.");
     }
 
+    private static void createOutputDirectory(String outputDir) {
+        File dir = new File(outputDir);
+        if (!dir.exists() && !dir.mkdirs()) {
+            System.err.println("目标目录 " + outputDir + " 创建失败");
+        }
+    }
+
+    private static Map<String, List<Entity>> groupEntitiesByType(EntityRepo entityRepo) {
+        Map<String, List<Entity>> groupedEntities = new HashMap<>();
+        entityRepo.entityIterator().forEachRemaining(entity -> {
+            String key = entity.getClass().getSimpleName();
+            groupedEntities.computeIfAbsent(key, k -> new ArrayList<>()).add(entity);
+        });
+        return groupedEntities;
+    }
+
     private static void processEntity(Map<String, List<Entity>> groupedEntities, EntityRepo entityRepo, String outputDir, String keyword) throws IOException {
-        //以文件为入口
         List<Entity> fileEntityList = groupedEntities.get("FileEntity");
-        if(fileEntityList == null || fileEntityList.isEmpty()){
+        if (fileEntityList == null || fileEntityList.isEmpty()) {
             throw new RuntimeException("无可解析的文件，请确认项目路径是否准确");
         }
-        List<FileEntity> fileEntity = fileEntityList.stream()
+
+        List<FileEntity> fileEntities = fileEntityList.stream()
                 .map(FileEntity.class::cast)
                 .collect(Collectors.toList());
 
-        // 设置默认关键字
         String searchKeyword = (keyword == null || keyword.isEmpty() || "null".equals(keyword)) ? "dfhksdhjfshksjhdfkasjd" : keyword;
-        // 获取带有注释标识的文件列表
-        List<String> entryFiles = fileEntity.stream()
+        List<String> entryFiles = fileEntities.stream()
                 .map(FileEntity::getQualifiedName)
                 .filter(filePath -> hasEntryAnnotation(filePath, searchKeyword))
                 .collect(Collectors.toList());
 
         if (!entryFiles.isEmpty()) {
-            System.out.println("发现文件解析标识“"+searchKeyword+"”，本次仅处理以下文件:");
+            System.out.println("发现文件解析标识“" + searchKeyword + "”，本次仅处理以下文件:");
             entryFiles.forEach(System.out::println);
         } else {
             System.out.println("未发现文件解析标识，所有文件全部处理");
         }
 
-        for (FileEntity entity : fileEntity) {
+        for (FileEntity entity : fileEntities) {
             if (!entryFiles.isEmpty() && !entryFiles.contains(entity.getQualifiedName())) {
                 continue;
             }
-            Collection<Entity> children = entity.getChildren();
-            if (children != null && !children.isEmpty()) {
-                for (Entity child : children) {
-                    if (child instanceof TypeEntity) {
-                        for (Entity funcChild : child.getChildren()) {
-                            if (funcChild instanceof FunctionEntity) {
+            processFileEntity(entity, entityRepo, outputDir);
+        }
+    }
 
-                                Set<Integer> ids = new HashSet<>();
-                                ids.add(funcChild.getId());
-                                FunctionEntity functionEntity = (FunctionEntity) funcChild;
-                                String funcName = functionEntity.getRawName().getName();//getExpressInfoByExpressCode
-                                String params = functionEntity.getParameters().stream()
-                                        .map(varEntity -> varEntity.getRawName().getName())
-                                        .collect(Collectors.joining(","));
-                                //ExpressInnerServiceImpl,getExpressInfoByExpressCode,expressCode,expressId
-                                String pathName = child.getRawName().getName() + "," + funcName + "," + params;
-                                String logFileName = outputDir + "/" + child.getRawName().getName() + "-" + funcName;
-                                try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + ".log"))) {
-                                    MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
-                                    if (null != methodDeclaration) {
-                                        //写入接口方法签名,source:com.biyao.express.dubbo.client.express.IExpressService.getExpressInfoByExpressCode
-                                        Collection<TypeEntity> implementedTypes = ((TypeEntity) child).getImplementedTypes();
-                                        if (implementedTypes != null && !implementedTypes.isEmpty()) {
-                                            implementedTypes.forEach(typeEntity -> typeEntity.getFunctions().forEach(signNameEntity -> {
-                                                if (methodDeclaration.getName().asString().equals(signNameEntity.getRawName().getName())) {
-                                                    try {
-                                                        writer.write("接口签名：" + signNameEntity.getQualifiedName() + "\n");
-                                                        currentInterface.setLeft(signNameEntity.getQualifiedName());
-                                                        currentInterface.setRight(methodDeclaration.getComment().isPresent()?methodDeclaration.getComment().orElse(null)+"":"");
-                                                    } catch (IOException e) {
-                                                        throw new RuntimeException(e);
-                                                    }
-                                                }
-                                            }));
-                                        }
-                                        if (methodDeclaration.getComment().isPresent()) {
-                                            writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
-                                        }
-                                        writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
-                                        processRelations(funcChild, entityRepo, logFileName, ids);
-                                    }
-                                }
-                                deleteEmptyFiles(outputDir);
-                            }
-                        }
+    private static void processFileEntity(FileEntity entity, EntityRepo entityRepo, String outputDir) throws IOException {
+        for (Entity child : entity.getChildren()) {
+            if (child instanceof TypeEntity) {
+                for (Entity funcChild : child.getChildren()) {
+                    if (funcChild instanceof FunctionEntity) {
+                        processFunctionEntity((FunctionEntity) funcChild, entityRepo, outputDir, child);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void processFunctionEntity(FunctionEntity functionEntity, EntityRepo entityRepo, String outputDir, Entity child) throws IOException {
+        Set<Integer> ids = new HashSet<>();
+        ids.add(functionEntity.getId());
+
+        String funcName = functionEntity.getRawName().getName();
+        String params = functionEntity.getParameters().stream()
+                .map(varEntity -> varEntity.getRawName().getName())
+                .collect(Collectors.joining(","));
+
+        String pathName = child.getRawName().getName() + "," + funcName + "," + params;
+        String logFileName = outputDir + "/" + child.getRawName().getName() + "-" + funcName;
+
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + ".log"))) {
+            MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
+            if (methodDeclaration != null) {
+                writeMethodSignature(writer, child, methodDeclaration);
+                writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
+                writer.write(methodDeclaration.getTokenRange().orElse(null) + "\n");
+                processRelations(functionEntity, entityRepo, logFileName, ids);
+            }
+        }
+        deleteEmptyFiles(outputDir);
+    }
+
+    private static void writeMethodSignature(BufferedWriter writer, Entity child, MethodDeclaration methodDeclaration) throws IOException {
+        Collection<TypeEntity> implementedTypes = ((TypeEntity) child).getImplementedTypes();
+        if (implementedTypes != null && !implementedTypes.isEmpty()) {
+            for (TypeEntity typeEntity : implementedTypes) {
+                for (Entity signNameEntity : typeEntity.getFunctions()) {
+                    if (methodDeclaration.getName().asString().equals(signNameEntity.getRawName().getName())) {
+                        writer.write("接口签名：" + signNameEntity.getQualifiedName() + "\n");
+                        currentInterface.setLeft(signNameEntity.getQualifiedName());
+                        currentInterface.setRight(methodDeclaration.getComment().orElse(null) + "");
                     }
                 }
             }
@@ -212,7 +219,7 @@ public class Main {
         try (BufferedReader reader = Files.newBufferedReader(Paths.get(filePath))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                if (line.contains("/**") || line.contains("*")) { // 开始读取注释
+                if (line.contains("/**") || line.contains("*")) {
                     while ((line = reader.readLine()) != null && !line.trim().isEmpty()) {
                         if (line.contains(keyword)) {
                             return true;
@@ -227,18 +234,12 @@ public class Main {
     }
 
     public static void deleteEmptyFiles(String directoryPath) {
-        Path inputDirectory = Paths.get(directoryPath);
-
         try {
-            // 使用Files.walk()获取目录下所有文件的流
-            Files.walk(inputDirectory)
-                    .filter(path -> !Files.isDirectory(path)) // 筛选出文件，排除目录
+            Files.walk(Paths.get(directoryPath))
+                    .filter(path -> !Files.isDirectory(path))
                     .forEach(path -> {
                         try {
-                            // 检查文件大小
-                            long fileSizeInBytes = Files.size(path);
-                            if (fileSizeInBytes == 0) {
-                                // 删除空文件
+                            if (Files.size(path) == 0) {
                                 Files.delete(path);
                                 System.out.println("Deleted empty file: " + path);
                             }
@@ -248,133 +249,119 @@ public class Main {
                         }
                     });
         } catch (IOException e) {
-            System.err.println("Error while walking the directory: " + inputDirectory);
+            System.err.println("Error while walking the directory: " + directoryPath);
             e.printStackTrace();
         }
     }
 
-    /**
-     * 处理依赖方法
-     */
     private static void processRelations(Entity entity, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
-        ArrayList<Relation> relations = entity.getRelations();
-        if (relations != null && !relations.isEmpty()) {
-            for (Relation relation : relations) {
-                if (relation.getEntity().getId().equals(entity.getId())) {
-                    continue;
+        for (Relation relation : entity.getRelations()) {
+            if (relation.getEntity().getId().equals(entity.getId())) {
+                continue;
+            }
+            if ("Call".equals(relation.getType()) && !ids.contains(relation.getEntity().getId())) {
+                if (logFileName.endsWith(".log")) {
+                    logFileName = logFileName.substring(0, logFileName.lastIndexOf("."));
                 }
-                //Call为方法调用
-                if ("Call".equals(relation.getType()) && !ids.contains(relation.getEntity().getId())) {
-                    //将方法单独拆分到新的文件
-                    if (logFileName.endsWith(".log")) {
-                        logFileName = logFileName.substring(0, logFileName.lastIndexOf("."));
-                    }
-                    String fileName = logFileName + "-" + relation.getEntity().getRawName().getName();
-                    printCodeBody(relation.getEntity(), entityRepo, fileName, ids);
-                    processRelations(relation.getEntity(), entityRepo, fileName, ids);
-                }
+                String fileName = logFileName + "-" + relation.getEntity().getRawName().getName();
+                printCodeBody(relation.getEntity(), entityRepo, fileName, ids);
+                processRelations(relation.getEntity(), entityRepo, fileName, ids);
             }
         }
     }
 
     private static void printCodeBody(Entity entity, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
-//        if (ids.contains(entity.getId())) {
-//            return;
-//        }
-        //对象依赖，将对象代码完整引入，如new ByException、new RegisterSFRouteHandler
         if (entity instanceof TypeEntity) {
-            Entity parent = entity.getParent();
-            if (parent instanceof FileEntity) {
-                ids.add(entity.getId());
-                ((TypeEntity) entity).getFunctions().forEach(funcEntity -> {
-                    try {
-                        ids.add(funcEntity.getId());
-                        processRelations(funcEntity, entityRepo, logFileName, ids);
-                    } catch (IOException e) {
-                        throw new RuntimeException(e);
-                    }
-                });
-            }
+            handleTypeEntity((TypeEntity) entity, entityRepo, logFileName, ids);
         } else if (entity instanceof FunctionEntity) {
-            FunctionEntity funcEntity = (FunctionEntity) entity;
-            String funcName = funcEntity.getRawName().getName();//getExpressInfoByExpressCode
-            String params = funcEntity.getParameters().stream()
-                    .map(varEntity -> varEntity.getRawName().getName())
-                    .collect(Collectors.joining(","));// expressCode,expressId
+            handleFunctionEntity((FunctionEntity) entity, entityRepo, logFileName, ids);
+        }
+    }
 
-            // 根据方法FunctionEntity 找到所属类TypeEntity，获取类名称
-            //处理interface调用
-            List<Entity> implementEntities = entityRepo.getImplementEntities(entity.getParent().getQualifiedName());
-            // 多个实现类
-            if (null != implementEntities && !implementEntities.isEmpty()) {
-                ids.add(entity.getId());
-                for (Entity implementEntity : implementEntities) {
-                    String pathName = implementEntity.getRawName().getName() + ","
-                            + funcName + "," + params;
-                    //取实现类代码
-                    MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
-                    if (null != methodDeclaration) {
-                        try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + "-" + funcName + ".log"))) {
-                            writeReference(writer);
-                            if (methodDeclaration.getComment().isPresent()) {
-                                writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
-                            }
-                            writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
-                        }
-                    }
-                    //取实现类方法
-                    List<Entity> funcImplementCall = entityRepo.getImplementEntities(pathName);
-                    if (null != funcImplementCall) {
-                        for (Entity call : funcImplementCall) {
-                            ids.add(call.getId());
-                            processRelations(call, entityRepo, logFileName, ids);
-                        }
-                    }
-                }
-            } else {
+    private static void handleTypeEntity(TypeEntity entity, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
+        Entity parent = entity.getParent();
+        if (parent instanceof FileEntity) {
+            ids.add(entity.getId());
+            for (Entity funcEntity : entity.getFunctions()) {
+                ids.add(funcEntity.getId());
+                processRelations(funcEntity, entityRepo, logFileName, ids);
+            }
+        }
+    }
+
+    private static void handleFunctionEntity(FunctionEntity funcEntity, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
+        String funcName = funcEntity.getRawName().getName();
+        String params = funcEntity.getParameters().stream()
+                .map(varEntity -> varEntity.getRawName().getName())
+                .collect(Collectors.joining(","));
+
+        List<Entity> implementEntities = entityRepo.getImplementEntities(funcEntity.getParent().getQualifiedName());
+        if (implementEntities != null && !implementEntities.isEmpty()) {
+            handleImplementedFunctions(implementEntities, funcName, params, entityRepo, logFileName, ids);
+        } else {
+            handleDirectFunction(funcEntity, entityRepo, logFileName, funcName, params, ids);
+        }
+    }
+
+    private static void handleImplementedFunctions(List<Entity> implementEntities, String funcName, String params, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
+        ids.add(funcName.hashCode());
+        for (Entity implementEntity : implementEntities) {
+            String pathName = implementEntity.getRawName().getName() + "," + funcName + "," + params;
+            MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
+            if (methodDeclaration != null) {
                 try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + "-" + funcName + ".log"))) {
-                    //非interface，直接读取方法体
-                    String pathName = entity.getParent().getRawName().getName() + "," + funcName + "," + params;
-                    ids.add(entity.getId());
-                    //取实现类代码
-                    MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
-                    if (methodDeclaration != null) {
-                        writeReference(writer);
-                        if (methodDeclaration.getComment().isPresent()) {
-                            writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "")+ "\n");
-                        }
-                        writer.write(cleanText(methodDeclaration.getTokenRange().orElse(null) + "") + "\n");
-                    }
+                    writeReference(writer);
+                    writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
+                    writer.write(methodDeclaration.getTokenRange().orElse(null) + "\n");
                 }
+            }
+            List<Entity> funcImplementCall = entityRepo.getImplementEntities(pathName);
+            if (funcImplementCall != null) {
+                for (Entity call : funcImplementCall) {
+                    ids.add(call.getId());
+                    processRelations(call, entityRepo, logFileName, ids);
+                }
+            }
+        }
+    }
+
+    private static void handleDirectFunction(FunctionEntity funcEntity, EntityRepo entityRepo, String logFileName, String funcName, String params, Set<Integer> ids) throws IOException {
+        String pathName = funcEntity.getParent().getRawName().getName() + "," + funcName + "," + params;
+        ids.add(funcEntity.getId());
+        MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
+        if (methodDeclaration != null) {
+            try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + "-" + funcName + ".log"))) {
+                writeReference(writer);
+                writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
+                writer.write(methodDeclaration.getTokenRange().orElse(null) + "" + "\n");
             }
         }
     }
 
     public static void writeReference(BufferedWriter writer) throws IOException {
         writer.write("该方法被接口[" + currentInterface.getLeft() + "]调用。\n");
-        if (currentInterface.getRight() != null && !currentInterface.getRight().isEmpty()) {
+        if (currentInterface.getRight() != null && !currentInterface.getRight().isEmpty()
+                && !"null".equals(currentInterface.getRight())) {
             writer.write("该接口功能说明如下:[" + currentInterface.getRight() + "]\n");
         }
     }
 
-    private static String cleanText(String text) {
-        if (text == null) {
-            return "";
-        }
-        return text;
+//    private static String cleanText(String text) {
+//        return text == null ? "" : text;
+
 //        text = text.replace("\n", " ").replace("\r", " ");
 //        return text.replaceAll("\\s+", " ");
 
 //        text = text.replaceAll("(\\r\\n|\\r)", "\n");
 //        return text.replaceAll("[ \\t\\f\\v]+", " ");
-    }
+//    }
 
     private static final Pattern AUTHOR_PATTERN = Pattern.compile("@author.*", Pattern.CASE_INSENSITIVE);
     private static final Pattern DATE_PATTERN = Pattern.compile("@date.*", Pattern.CASE_INSENSITIVE);
     private static final Pattern MODIFIED_PATTERN = Pattern.compile("@modified.*", Pattern.CASE_INSENSITIVE);
 
     private static String cleanCommentText(String text) {
-        if (text == null) {
+        if (text == null || "null".equals(text) || text.isEmpty()) {
             return "";
         }
         String[] lines = text.split("\n");
@@ -389,46 +376,5 @@ public class Main {
         return cleanedText.toString().replaceAll("\\s+", "").trim();
     }
 
-    public static int MAX_FILE_SIZE = 122880;//超过120k截断
-    private static final Pattern SET_PATTERN = Pattern.compile("^\\s*public\\s+void\\s+set[A-Z][a-zA-Z0-9]*\\s*\\([^)]*\\)\\s*\\{\\s*this\\.[a-zA-Z0-9]+\\s*=\\s*[a-zA-Z0-9]+\\s*;\\s*\\}\\s*$");
-    private static final Pattern GET_PATTERN = Pattern.compile("^\\s*public\\s+[a-zA-Z0-9<>,\\s]+\\s+get[A-Z][a-zA-Z0-9]*\\s*\\([^)]*\\)\\s*\\{\\s*return\\s+[a-zA-Z0-9]+\\s*;\\s*\\}\\s*$");
-
-    private static void compressContent(Path path) throws IOException {
-        // 1. 读取文件内容
-        String content = new String(Files.readAllBytes(path));
-        // 2. 按行拆分内容，并检查每行，清理 set 和 get 方法
-        StringBuilder filteredBuilder = new StringBuilder();
-        String[] lines = content.split("\n");
-        for (String line : lines) {
-            if (!isSetOrGetMethod(line)) {
-                filteredBuilder.append(line).append("\n");
-            }
-        }
-
-        String filteredContent = filteredBuilder.toString();
-        // 3. 判断是否超过128KB，超过则继续清理空字符，不超过写回新内容
-        if (filteredContent.getBytes().length > MAX_FILE_SIZE) {
-            String cleanedContent = filteredContent;
-//            String cleanedContent = filteredContent.replaceAll("\\s+", "");
-            writeContent(path, cleanedContent);
-        } else {
-            Files.write(path, filteredContent.getBytes());
-        }
-    }
-
-    private static boolean isSetOrGetMethod(String line) {
-        return SET_PATTERN.matcher(line).matches() || GET_PATTERN.matcher(line).matches();
-    }
-
-    private static void writeContent(Path path, String content) throws IOException {
-        if (content.getBytes().length > MAX_FILE_SIZE) {
-            System.err.println("文件大小超过 "+ MAX_FILE_SIZE/1024 +"KB, 截断内容");
-            byte[] truncatedBytes = new byte[MAX_FILE_SIZE];
-            System.arraycopy(content.getBytes(), 0, truncatedBytes, 0, MAX_FILE_SIZE);
-            Files.write(path, truncatedBytes);
-        } else {
-            Files.write(path, content.getBytes());
-        }
-    }
 
 }

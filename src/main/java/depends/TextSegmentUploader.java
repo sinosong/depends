@@ -28,10 +28,12 @@ public class TextSegmentUploader {
 
     private static final String API_KEY = "dataset-o1lNG1VIQrhpHWotn8RA0vTR";
     private static final String BASE_URL = "http://10.6.56.26/v1";
-    private static String DATASET_ID = "949f896b-f22f-4442-beca-6a096c931de0";
+//    private static String DATASET_ID = "6e687775-f6d6-4e94-ab24-defde73d2ee3";//scm
+    private static String DATASET_ID = "4a066f76-5484-4bc0-8d39-6a0f1d734367";//msi
+    private static String FILE_NAME = "msidisconf";//msi
 
     public static void main(String[] args) {
-        callDify("/Users/esvc/temp/dify/express.biyao.com.061816");
+        callDify("/Users/esvc/biyao/disconf/msi");
     }
 
     private static void callDify(String dirPath) {
@@ -42,8 +44,7 @@ public class TextSegmentUploader {
         }
         JSONObject processRule = new JSONObject();
         processRule.put("mode", "automatic");
-        String fileName = UUID.randomUUID().toString().replace("-", "");
-        fileName = "express方法维度不清理格式";
+        String fileName = "".equals(FILE_NAME) ? UUID.randomUUID().toString().replace("-", "") : FILE_NAME;
         String documentId = createDocumentByText(DATASET_ID, fileName, "", "high_quality", processRule);
         System.out.println("请访问：http://10.6.56.26/datasets/"+DATASET_ID+"/documents/"+ documentId);
 

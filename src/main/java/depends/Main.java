@@ -25,10 +25,7 @@ SOFTWARE.
 package depends;
 
 import com.github.javaparser.ast.body.MethodDeclaration;
-import depends.entity.Entity;
-import depends.entity.FileEntity;
-import depends.entity.FunctionEntity;
-import depends.entity.TypeEntity;
+import depends.entity.*;
 import depends.entity.repo.EntityRepo;
 import depends.extractor.AbstractLangProcessor;
 import depends.extractor.LangProcessorRegistration;
@@ -44,8 +41,13 @@ import picocli.CommandLine;
 import picocli.CommandLine.PicocliException;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -55,11 +57,13 @@ import java.util.stream.Collectors;
  */
 public class Main {
 
+    private static final int MAX_FILENAME_LENGTH = 200;
     public static MutablePair<String, String> currentInterface = new MutablePair<>("", "");
 
     public static void main(String[] args) {
         try {
-            args = new String[]{"java","/Users/esvc/biyao/code/express.biyao.com", "./output/express.biyao.com.061901"};
+            //dfhksdhjfshksjhdfkasjd
+//          args = new String[]{"java", "/Users/esvc/biyao/code/scm.biyao.com", "/Users/esvc/temp/dify/scm.biyao.com.061901"};
             new LangRegister().register();
             ParseCommand appArgs = CommandLine.populateCommand(new ParseCommand(), args);
 
@@ -108,6 +112,8 @@ public class Main {
 
         Map<String, List<Entity>> groupedEntities = groupEntitiesByType(entityRepo);
         processEntity(groupedEntities, entityRepo, outputDir, keyword);
+
+        deleteEmptyFiles(outputDir);
 
         long endTime = System.currentTimeMillis();
         TemporaryFile.getInstance().delete();
@@ -165,11 +171,20 @@ public class Main {
     }
 
     private static void processFileEntity(FileEntity entity, EntityRepo entityRepo, String outputDir) throws IOException {
-        for (Entity child : entity.getChildren()) {
-            if (child instanceof TypeEntity) {
-                for (Entity funcChild : child.getChildren()) {
-                    if (funcChild instanceof FunctionEntity) {
-                        processFunctionEntity((FunctionEntity) funcChild, entityRepo, outputDir, child);
+        Collection<Entity> typeEntityList = entity.getChildren();
+        if (typeEntityList != null && !typeEntityList.isEmpty()) {
+            if (hasGetterAndSetter((TypeEntity) typeEntityList.iterator().next())) {
+                Path path = Paths.get(entity.getQualifiedName());
+                Path logFilePath = Paths.get(outputDir).resolve(path.getFileName() + ".log");
+                Files.copy(path, logFilePath, StandardCopyOption.REPLACE_EXISTING);
+                return;
+            }
+            for (Entity child : typeEntityList) {
+                if (child instanceof TypeEntity) {
+                    for (Entity funcChild : child.getChildren()) {
+                        if (funcChild instanceof FunctionEntity) {
+                            processFunctionEntity((FunctionEntity) funcChild, entityRepo, outputDir, child);
+                        }
                     }
                 }
             }
@@ -188,6 +203,8 @@ public class Main {
         String pathName = child.getRawName().getName() + "," + funcName + "," + params;
         String logFileName = outputDir + "/" + child.getRawName().getName() + "-" + funcName;
 
+        logFileName = shortenFileNameIfNeeded(logFileName);
+
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + ".log"))) {
             MethodDeclaration methodDeclaration = entityRepo.getMethodDeclaration(pathName);
             if (methodDeclaration != null) {
@@ -197,7 +214,28 @@ public class Main {
                 processRelations(functionEntity, entityRepo, logFileName, ids);
             }
         }
-        deleteEmptyFiles(outputDir);
+    }
+
+    private static String shortenFileNameIfNeeded(String fileName) {
+        if (fileName.length() <= MAX_FILENAME_LENGTH) {
+            return fileName;
+        }
+        String hash = generateHash(fileName);
+        return fileName.substring(0, MAX_FILENAME_LENGTH - hash.length() - 1) + "-" + hash;
+    }
+
+    private static String generateHash(String input) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hashString = new StringBuilder();
+            for (byte b : hashBytes) {
+                hashString.append(String.format("%02x", b));
+            }
+            return hashString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-256 algorithm not found", e);
+        }
     }
 
     private static void writeMethodSignature(BufferedWriter writer, Entity child, MethodDeclaration methodDeclaration) throws IOException {
@@ -264,6 +302,7 @@ public class Main {
                     logFileName = logFileName.substring(0, logFileName.lastIndexOf("."));
                 }
                 String fileName = logFileName + "-" + relation.getEntity().getRawName().getName();
+                fileName = shortenFileNameIfNeeded(fileName);
                 printCodeBody(relation.getEntity(), entityRepo, fileName, ids);
                 processRelations(relation.getEntity(), entityRepo, fileName, ids);
             }
@@ -294,13 +333,38 @@ public class Main {
         String params = funcEntity.getParameters().stream()
                 .map(varEntity -> varEntity.getRawName().getName())
                 .collect(Collectors.joining(","));
-
-        List<Entity> implementEntities = entityRepo.getImplementEntities(funcEntity.getParent().getQualifiedName());
+        TypeEntity typeEntity = (TypeEntity) funcEntity.getParent();
+        if (hasGetterAndSetter(typeEntity)) {
+            return;
+        }
+        List<Entity> implementEntities = entityRepo.getImplementEntities(typeEntity.getQualifiedName());
         if (implementEntities != null && !implementEntities.isEmpty()) {
             handleImplementedFunctions(implementEntities, funcName, params, entityRepo, logFileName, ids);
         } else {
             handleDirectFunction(funcEntity, entityRepo, logFileName, funcName, params, ids);
         }
+    }
+
+    // 剔除数据库实体类方法打印
+    public static boolean hasGetterAndSetter(TypeEntity typeEntity) {
+        if (typeEntity.getVars().isEmpty()) {
+            return false;
+        }
+        Set<String> methodNames = typeEntity.getFunctions().stream()
+                .map(varEntity -> varEntity.getRawName().getName())
+                .map(String::toLowerCase)
+                .collect(Collectors.toSet());
+        for (VarEntity varEntity : typeEntity.getVars()) {
+            String varName = varEntity.getRawName().getName();
+            if ("serialVersionUID".equals(varName)) {
+                continue;
+            }
+            if (!(methodNames.contains("set" + varName.toLowerCase())
+                    && methodNames.contains("get" + varName.toLowerCase()))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void handleImplementedFunctions(List<Entity> implementEntities, String funcName, String params, EntityRepo entityRepo, String logFileName, Set<Integer> ids) throws IOException {
@@ -333,29 +397,21 @@ public class Main {
             try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFileName + "-" + funcName + ".log"))) {
                 writeReference(writer);
                 writer.write(cleanCommentText(methodDeclaration.getComment().orElse(null) + "") + "\n");
-                writer.write(methodDeclaration.getTokenRange().orElse(null) + "" + "\n");
+                writer.write(methodDeclaration.getTokenRange().orElse(null) + "\n");
             }
         }
     }
 
     public static void writeReference(BufferedWriter writer) throws IOException {
-        writer.write("该方法被接口[" + currentInterface.getLeft() + "]调用。\n");
+        if (currentInterface.getLeft() != null && !currentInterface.getLeft().isEmpty()
+                && !"null".equals(currentInterface.getLeft())) {
+            writer.write("该方法被接口[" + currentInterface.getLeft() + "]调用。\n");
+        }
         if (currentInterface.getRight() != null && !currentInterface.getRight().isEmpty()
                 && !"null".equals(currentInterface.getRight())) {
             writer.write("该接口功能说明如下:[" + currentInterface.getRight() + "]\n");
         }
     }
-
-//    private static String cleanText(String text) {
-//        return text == null ? "" : text;
-
-//        text = text.replace("\n", " ").replace("\r", " ");
-//        return text.replaceAll("\\s+", " ");
-
-//        text = text.replaceAll("(\\r\\n|\\r)", "\n");
-//        return text.replaceAll("[ \\t\\f\\v]+", " ");
-//    }
-
     private static final Pattern AUTHOR_PATTERN = Pattern.compile("@author.*", Pattern.CASE_INSENSITIVE);
     private static final Pattern DATE_PATTERN = Pattern.compile("@date.*", Pattern.CASE_INSENSITIVE);
     private static final Pattern MODIFIED_PATTERN = Pattern.compile("@modified.*", Pattern.CASE_INSENSITIVE);
